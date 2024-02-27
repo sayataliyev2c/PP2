@@ -105,6 +105,7 @@ def main():
     print(grams_to_ounces(100))
     print(fahrenheit_to_celsius(68))
     print(solve(35, 94))
+    [1,]
     print(filter_prime("2 3 4 5 6 7 8 9 10 11 12 13 14 15"))
     print_permutations("abc")
     print(reverse_sentence("We are ready"))
