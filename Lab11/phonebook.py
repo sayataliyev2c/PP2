@@ -1,195 +1,166 @@
-import sys, psycopg2
-from pygame.locals import *
-from assets.Snake import *
-from config import *
+import psycopg2, csv
+from config import host, password, user, database, port
 
-pygame.init()
-screen = pygame.display.set_mode((700, 700))
-pygame.display.set_caption('Snake')
-screenrect = screen.get_rect()
+def main():
 
-#Database connect
-conn = psycopg2.connect(
+    try:
+        conn = psycopg2.connect(
             host=host,
             dbname=database,
             user=user,
             password=password,
             port=port
         )
-cur = conn.cursor()
 
-#TABLE
-cur.execute(
-   '''CREATE TABLE IF NOT EXISTS usertable(
-   username varchar(100) NOT NULL,
-   user_score int,
-   user_level int
-   )'''
-)
-conn.commit()
+        cur = conn.cursor()
 
-#CONST
-FPS = pygame.time.Clock()
-RED = 'red'
-block = 25
+        command = '''
+        CREATE TABLE IF NOT EXISTS phonebook_table(
+                    id  SERIAL PRIMARY KEY,
+                    first_name VARCHAR(30) NOT NULL,
+                    last_name VARCHAR(30) NOT NULL,
+                    phone_num VARCHAR(30) NOT NULL
+        )'''
 
-#CountDown for Foods
-time_event = pygame.USEREVENT + 1
-pygame.time.set_timer(time_event, 1000)
-
-def insertname(username):
-   cur.execute(
-      "INSERT INTO usertable VALUES('{}', 0, 0)".format(username)
-   )
-   conn.commit()
-
-def upd(user, SCORE, LEVEL):
-   cur.execute(
-      "SELECT * FROM usertable WHERE username = '{}'".format(user)
-   )
-   row = cur.fetchone()
-   cur.execute(
-      "UPDATE usertable SET user_score = '{}', user_level = '{}' WHERE username = '{}'".format
-      (max(row[1], SCORE), max(row[2], LEVEL), user)
-   )
-   conn.commit()
-
-def main():
-    snake = Snake(screen)
-    food = Food(screen ,5, 5)
-
-    #CONST
-    food_id = 0
-    dx, dy = 0, 0
-    CD = 7
-    Score = 0
-    DIFFICULITY = 5
-    LEVEL = 0
-    ScoreCounter = 0
-
-    print("Enter your name")
-    username = input()
-    cur.execute("SELECT count(*) FROM usertable WHERE username='{}'".format(username))
-    conn.commit()
-    if cur.fetchone()[0] == 0:
-        insertname(username)
+        cur.execute(command)
         conn.commit()
-    else:
-        cur.execute("SELECT * FROM usertable WHERE username = '{}'".format(username))
-        data = cur.fetchone()
-        print("User's max score:{}".format(data[1]))
-        print("User's max level:{}".format(data[2]))
 
-    pause = False
-    while True:
-        screen.fill('black')
+        print(
+        '''
+1 - Get records by pattern
+2 - Insert new user
+3 - Insert new users
+4 - Querying data from the tables with pagination (by limit and offset)
+5 - Deleting data from tables by username or phone
+        ''')
 
-        # Score font
-        score = pygame.font.SysFont("arial", 35).render("You Score: " + str(Score), True, 'white')
-        screen.blit(score, (10, 10))
+        chosenone = int(input())
+        if chosenone == 1:
+            pattern = input()
 
-        # Level font
-        level = pygame.font.SysFont("arial", 35).render("You Level: " + str(LEVEL), True, 'white')
-        screen.blit(level, (screenrect.centerx - 35, screenrect.top + 10))
+            cur.execute('''
+            CREATE OR REPLACE FUNCTION getting_records(pattern VARCHAR)
+            RETURNS table(id INTEGER, first_name VARCHAR, last_name VARCHAR, phone_num VARCHAR)
+            AS $$
+            BEGIN 
+              RETURN QUERY
+              SELECT * FROM phonebook_table WHERE phonebook_table.first_name LIKE '%' || pattern || '%' OR phonebook_table.last_name LIKE '%' || pattern || '%' OR phonebook_table.phone_num LIKE '%' || pattern || '%';
+            END
+            $$ language plpgsql
+            ''')
+            conn.commit()
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                cur.close()
-                conn.close()
-                sys.exit()
+            cur.execute(f'''SELECT * FROM getting_records('{pattern}')''')
+            res = cur.fetchall()
 
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_RIGHT and (dx != -1 or dy != 0):
-                    dx, dy = 1, 0
-                elif event.key == pygame.K_LEFT and (dx != 1 or dy != 0):
-                    dx, dy = -1, 0
-                elif event.key == pygame.K_UP and (dx != 0 or dy != 1):
-                    dx, dy = 0, -1
-                elif event.key == pygame.K_DOWN and (dx != 0 or dy != -1):
-                    dx, dy = 0, 1
-                elif event.key == pygame.K_SPACE:
-                    upd(username, Score, LEVEL)
-                    pause = True
-            if event.type == time_event:
-                CD -= 1
-                if CD == 0:
-                    CD = 7
-                    food.location.x = random.randint(0, screenrect.right // block - 1)
-                    food.location.y = random.randint(0, screenrect.bottom // block - 1)
-                    food_id = random.randint(0, 2)
+            for row in res: print(row)
+
+        if chosenone == 2:
+            cur.execute('''
+            CREATE OR REPLACE PROCEDURE insert_user(name VARCHAR, lastname VARCHAR, phone VARCHAR)
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+              IF EXISTS(SELECT 1 FROM phonebook_table WHERE first_name = name AND last_name = lastname) THEN
+                UPDATE phonebook_table SET phone_num = phone WHERE first_name = name AND last_name = lastname;
+              ELSE
+                INSERT INTO phonebook_table(first_name, last_name, phone_num) VALUES (name, lastname, phone);
+              END IF;
+            END;
+            $$;''')
+            conn.commit()
+
+            name = input('Enter name:')
+            lastname = input('Enter lastname:')
+            phone = input('Enter phone number:')
+            cur.execute(f'''CALL insert_user('{name}', '{lastname}','{phone}')''')
+            conn.commit()
+
+        if chosenone == 3:
+            cur.execute('''
+            CREATE OR REPLACE PROCEDURE insert_users(
+              IN names_list text[],
+              IN surnames_list text[],
+              IN phones_list text[]
+            )
+            LANGUAGE plpgsql
+            AS $$
+            DECLARE
+              i integer;
+              invalid_phones text[];
+            BEGIN
+              IF array_length(names_list, 1) != array_length(surnames_list, 1) OR array_length(names_list, 1) != array_length(phones_list, 1) 
+              THEN  RAISE EXCEPTION 'arrays must have the same length';
+              END IF;
+            
+              FOR i IN 1..array_length(names_list, 1) LOOP
+                IF phones_list[i] ~ '\D' THEN
+                  invalid_phones := array_append(invalid_phones, phones_list[i]);
+                ELSE
+                  INSERT INTO phonebook_table (first_name, last_name, phone_num)
+                  VALUES (names_list[i], surnames_list[i], phones_list[i]);
+                END IF;
+              END LOOP;
+            
+              IF array_length(invalid_phones, 1) > 0 THEN
+                RAISE EXCEPTION 'following phone numbers are invalid: %', invalid_phones;
+              END IF;
+            END;
+            $$;''')
+            conn.commit()
 
 
-        while pause:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    cur.close()
-                    conn.close()
-                    sys.exit()
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_u:
-                    pause = False
-            unpause = pygame.font.SysFont("minecraftia20", 50).render('Press u to unpause', True, 'white')
-            screen.blit(unpause, unpause.get_rect(center=(700 // 2, 700 // 2)))
-            pygame.display.update()
+            names = input().split()
+            surnames = input().split()
+            phones = input().split()
 
-        snake.move(dx, dy)
+            cur.execute("CALL insert_users(%s, %s, %s)", (names, surnames, phones))
+            conn.commit()
 
-        #FOOD
-        if snake.check_collision(food):
+        if chosenone == 4:
+            cur.execute('''
+            CREATE OR REPLACE FUNCTION paginating(a integer, b integer) 
+            RETURNS SETOF phonebook_table 
+            AS $$ 
+            SELECT * FROM phonebook_table 
+                LIMIT a OFFSET b; 
+            $$ 
+            language sql;''')
+            conn.commit()
 
-            food.location.x = random.randint(0, screenrect.right // block - 1)
-            food.location.y = random.randint(0, screenrect.bottom // block - 1)
-            CD = 7
+            Limit = input('Enter limit:')
+            Offset = input('Enter offset:')
 
-            if food_id == 2:
-                Score += 3
-                ScoreCounter += 3
-                for i in range(0, 3):
-                    snake.body.append(
-                        Point(snake.body[-1].x, snake.body[-1].y)
-                    )
-            else:
-                Score += 1
-                ScoreCounter += 1
-                snake.body.append(
-                    Point(snake.body[-1].x, snake.body[-1].y)
-                )
-            food_id = random.randint(0, 2)
+            cur.execute(f'''SELECT * FROM paginating({Limit}, {Offset});''')
+            res = cur.fetchall()
 
-        #LevelChecker
-        if ScoreCounter > 3:
-            ScoreCounter -= 4
-            LEVEL += 1
-            DIFFICULITY += 5
+            for row in res:
+                print(row)
 
-        #Draw
-        snake.draw()
-        draw_grid(screen)
-        if food_id == 2: food.draw2()
-        else: food.draw()
+        if chosenone == 5:
+            cur.execute('''
+            CREATE OR REPLACE PROCEDURE delete_from_phonebook(IN search_text TEXT)
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+              DELETE FROM phonebook_table
+              WHERE first_name ILIKE '%' || search_text || '%' OR last_name ILIKE '%' || search_text || '%' OR phone_num ILIKE '%' || search_text || '%';
+            END;
+            $$;''')
+            conn.commit()
 
-        if snake.game_over() and Score != 0:
-            RePlay()
+            pattern = input()
+            cur.execute(f'''Call delete_from_phonebook('{pattern}')''')
 
-        pygame.display.flip()
-        FPS.tick(DIFFICULITY)
+        conn.commit()
+        cur.close()
+        conn.close()
 
-def RePlay():
-    while True:
-        screen.fill(('red'))
-        message = "PRESS P TO PLAY AGAIN"
-        TEXT = pygame.font.SysFont("bahnschrift", 40).render(message, True, 'white')
-        screen.blit(TEXT, [140, 350])
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                sys.exit()
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_p:
-                    return main()
-                elif event.key == pygame.K_q:
-                    cur.close()
-                    conn.close()
-                    sys.exit()
-        pygame.display.update()
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 if __name__ == '__main__':
     main()
